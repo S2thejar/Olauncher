@@ -3,7 +3,6 @@ package app.olauncher.ui
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class HomeGridTest {
@@ -26,15 +25,33 @@ class HomeGridTest {
         assertEquals(GridCell(2, 1, 2, 1), firstGridCell(2, 1, 4, occupied))
         assertEquals(GridCell(0, 2, 4, 2), firstGridCell(4, 2, 4, occupied))
     }
-    @Test fun widgetCanGrowTowardLeftWhenAtRightEdge() {
-        val widget = GridCell(2, 3, 2, 2)
-        assertEquals(GridCell(1, 3, 3, 2), widget.resizeTo(3, 2, 4, emptyList()))
+
+    @Test fun draggedCornerCanReachMinimumAndMaximum() {
+        val widget = GridCell(0, 3, 7, 9)
+        assertEquals(GridCell(0, 3, 1, 1), widget.resizeFrom(ResizeHandle.BOTTOM_RIGHT, -20, -20))
+        assertEquals(GridCell(0, 3, 14, 14), widget.resizeFrom(ResizeHandle.BOTTOM_RIGHT, 20, 20))
     }
 
-    @Test fun widgetCanGrowUpwardInsteadOfOverlappingAnotherItem() {
-        val widget = GridCell(1, 3, 2, 2)
-        val below = GridCell(1, 5, 2, 1)
-        assertEquals(GridCell(1, 2, 2, 3), widget.resizeTo(2, 3, 4, listOf(below)))
-        assertNull(widget.resizeTo(2, 3, 4, listOf(below, GridCell(1, 2, 2, 1))))
+    @Test fun topLeftResizeKeepsBottomRightAnchored() {
+        val widget = GridCell(4, 18, 8, 7)
+        assertEquals(GridCell(0, 11, 12, 14), widget.resizeFrom(ResizeHandle.TOP_LEFT, -20, -20))
+        assertEquals(GridCell(11, 24, 1, 1), widget.resizeFrom(ResizeHandle.TOP_LEFT, 20, 20))
+    }
+
+    @Test fun edgeDragOnlyChangesItsOwnAxisAndChecksNeighbors() {
+        val widget = GridCell(7, 2, 5, 8)
+        val grown = widget.resizeFrom(ResizeHandle.RIGHT, 20, 20)
+        assertEquals(GridCell(7, 2, 7, 8), grown)
+        assertFalse(grown.fits(HOME_GRID_COLUMNS, listOf(GridCell(12, 3, 2, 2))))
+        assertTrue(grown.fits(HOME_GRID_COLUMNS, listOf(GridCell(12, 10, 2, 2))))
+    }
+
+    @Test fun migrationKeepsNeighborsAdjacentAndWidgetWithinRange() {
+        val left = GridCell(0, 3, 1, 4).onFineGrid(4, false)
+        val right = GridCell(1, 3, 3, 10).onFineGrid(4, true)
+        assertEquals(GridCell(0, 6, 4, 8), left)
+        assertEquals(GridCell(4, 6, 10, 14), right)
+        assertTrue(right.fits(HOME_GRID_COLUMNS, listOf(left)))
+        assertEquals(GridCell(7, 12, 7, 6), GridCell(3, 6, 3, 3).onFineGrid(6, true))
     }
 }

@@ -62,18 +62,20 @@ internal class HomeWidgetStore(private val context: Context) {
         val minHeight = (info.minHeight / density).toInt().coerceIn(48, maxHeight)
         container.addView(widget, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             if (grid) ViewGroup.LayoutParams.MATCH_PARENT else (minHeight * density).toInt()))
-        widget.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
-            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
-                val width = ((right - left) / density).toInt()
-                val height = ((bottom - top) / density).toInt()
-                if (width > 0 && height > 0) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        widget.updateAppWidgetSize(Bundle(), listOf(SizeF(width.toFloat(), height.toFloat())))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        widget.updateAppWidgetSize(Bundle(), width, height, width, height)
-                    }
-                }
+        var lastWidth = 0
+        var lastHeight = 0
+        container.onSizeCommitted = report@{ widthPx, heightPx ->
+            val width = (widthPx / density).toInt().coerceAtLeast(1)
+            val height = (heightPx / density).toInt().coerceAtLeast(1)
+            if (lastWidth == width && lastHeight == height) return@report
+            lastWidth = width
+            lastHeight = height
+            // Don't ask RemoteViews providers to redraw at every snap point during a gesture.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                widget.updateAppWidgetSize(Bundle(), listOf(SizeF(width.toFloat(), height.toFloat())))
+            } else {
+                @Suppress("DEPRECATION")
+                widget.updateAppWidgetSize(Bundle(), width, height, width, height)
             }
         }
         return true

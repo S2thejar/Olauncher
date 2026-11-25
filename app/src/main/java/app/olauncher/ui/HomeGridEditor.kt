@@ -3,26 +3,27 @@ package app.olauncher.ui
 import android.appwidget.AppWidgetProviderInfo
 import android.content.res.Configuration
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.Typeface
-import android.os.Build
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import app.olauncher.R
 import app.olauncher.helper.dpToPx
+import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /** An opt-in grid; stock list and its preferences remain untouched until the first edit. */
@@ -33,14 +34,18 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     var editing = false
         private set
     private data class Item(val key: String, val view: View, val widget: AppWidgetProviderInfo?)
-    private data class Limits(val minW: Int, val maxW: Int, val minH: Int, val maxH: Int)
-    private data class Drag(val item: Item, val cell: GridCell, val x: Float, val y: Float, val resize: Boolean)
+    private data class Span(val width: Int, val height: Int)
+    private data class Drag(val item: Item, val cell: GridCell, val x: Float, val y: Float, val startOffset: Int,
+        val handle: ResizeHandle?, var lastValid: GridCell = cell, var blocked: Boolean = false,
+        var moved: Boolean = false)
+    private data class Handle(val edge: ResizeHandle, val x: Float, val y: Float)
     private var items = emptyList<Item>()
     private val cells = linkedMapOf<Item, GridCell>()
-    private val limits = mutableMapOf<Item, Limits>()
+    private val preferred = mutableMapOf<Item, Span>()
     private val landscape get() = context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    private val columns get() = if (landscape) 6 else 4
-    private val prefix get() = if (landscape) "land_" else "port_"
+    private val columns = HOME_GRID_COLUMNS
+    private val legacyPrefix get() = if (landscape) "land_" else "port_"
+    private val prefix get() = "fine_$legacyPrefix"
     private val top get() = root.paddingTop + 48.dpToPx()
     // The activity uses FLAG_LAYOUT_NO_LIMITS, so keep editor actions outside system navigation.
     private val footerBottom get() = maxOf(root.paddingBottom, 48.dpToPx(),
@@ -54,8 +59,25 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     private var maxOffset = 0
     private var selectedKey: String? = null
     private var drag: Drag? = null
-    private var preview: Pair<GridCell, Boolean>? = null
+    private var revealSelection = false
+    private var pointerX = 0f
+    private var pointerY = 0f
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var autoScrollPending = false
+    private val autoScroll = object : Runnable {
+        override fun run() {
+            autoScrollPending = false
+            val active = drag ?: return
+            val step = edgeScrollDirection(pointerY, active)
+            if (step == 0) return
+            offset += step
+            updateDrag(active, pointerX, pointerY)
+            root.requestLayout()
+            scheduleAutoScroll(active, 100)
+        }
+    }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var gestureExclusions = emptyList<Rect>()
     var onResizeTitle: ((View) -> Unit)? = null
     var onRemoveWidget: ((Int) -> Unit)? = null
     var onEditChanged: ((Boolean) -> Unit)? = null
@@ -82,9 +104,8 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     }
     private val resize = button(R.string.personal_resize) {
         val item = cells.keys.firstOrNull { it.key == selectedKey } ?: return@button
-        if (item.widget != null) chooseWidgetSize(item) else onResizeTitle?.invoke(item.view)
+        if (item.widget == null) onResizeTitle?.invoke(item.view)
     }
-    private var sizeDialog: AlertDialog? = null
     private val done = button(R.string.personal_grid_done) { finish() }
     private val footer = LinearLayout(context).apply {
         gravity = Gravity.CENTER
@@ -120,6 +141,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         editing = true
         bindGrid()
         selectedKey = widgetId?.let { "widget_$it" }
+        revealSelection = widgetId != null
         updateFooter()
         onEditChanged?.invoke(true)
         root.requestLayout()
@@ -128,11 +150,9 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     fun finish() {
         if (!editing) return
         editing = false
-        sizeDialog?.dismiss()
-        sizeDialog = null
         selectedKey = null
-        drag = null
-        preview = null
+        revealSelection = false
+        stopDrag(commit = false)
         updateFooter()
         onEditChanged?.invoke(false)
         root.requestLayout()
@@ -140,76 +160,78 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     }
 
     fun forgetWidget(id: Int) {
-        prefs.edit { remove("port_widget_$id"); remove("land_widget_$id") }
+        prefs.edit {
+            listOf("port_", "land_", "fine_port_", "fine_land_").forEach { remove("${it}widget_$id") }
+        }
         if (selectedKey == "widget_$id") selectedKey = null
     }
 
     private fun stored(item: Item): GridCell? {
-        val parts = prefs.getString(prefix + item.key, null)?.split(',')?.mapNotNull(String::toIntOrNull) ?: return null
-        if (parts.size != 4) return null
-        return GridCell(parts[0], parts[1], parts[2], parts[3])
+        fun read(key: String): GridCell? {
+            val parts = prefs.getString(key + item.key, null)?.split(',') ?: return null
+            if (parts.size != 4) return null
+            val (x, y, w, h) = parts.map { it.toIntOrNull() ?: return null }
+            return GridCell(x, y, w, h)
+        }
+        return read(prefix) ?: read(legacyPrefix)?.onFineGrid(if (landscape) 6 else 4, item.widget != null)
     }
 
     fun measure(width: Int, height: Int) {
-        val usableHeight = (height - top - footerBottom - footerHeight - 8.dpToPx()).coerceAtLeast(48.dpToPx())
-        visibleRows = (usableHeight / 48.dpToPx()).coerceAtLeast(1)
+        val usableHeight = (height - top - footerBottom - footerHeight - 8.dpToPx()).coerceAtLeast(24.dpToPx())
+        // Each old row is exactly two fine rows, preserving existing vertical spacing.
+        visibleRows = ((usableHeight / 48.dpToPx()) * 2).coerceAtLeast(1)
         cellHeight = usableHeight.toFloat() / visibleRows
         cellWidth = (width - left - root.paddingRight - 16.dpToPx()).coerceAtLeast(columns).toFloat() / columns
         cells.clear()
-        limits.clear()
+        preferred.clear()
         val visible = items.filter { it.view.visibility != View.GONE }
         fun span(px: Int, size: Float, max: Int) = ceil(px / size).toInt().coerceIn(1, max)
         visible.forEach { item ->
             val view = item.view
             val provider = item.widget
-            limits[item] = if (provider == null) {
+            preferred[item] = if (provider == null) {
                 view.measure(View.MeasureSpec.makeMeasureSpec((columns * cellWidth).toInt(), View.MeasureSpec.AT_MOST),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
-                Limits(span(view.measuredWidth + 1, cellWidth, columns), columns, span(view.measuredHeight, cellHeight, visibleRows), visibleRows)
+                Span(span(view.measuredWidth + 1, cellWidth, columns), span(view.measuredHeight, cellHeight, visibleRows))
             } else {
-                val horizontal = provider.resizeMode and AppWidgetProviderInfo.RESIZE_HORIZONTAL != 0
-                val vertical = provider.resizeMode and AppWidgetProviderInfo.RESIZE_VERTICAL != 0
-                val defaultW = span(provider.minWidth, cellWidth, columns)
-                val defaultH = span(provider.minHeight, cellHeight, visibleRows)
-                val minW = if (horizontal && provider.minResizeWidth > 0) span(provider.minResizeWidth, cellWidth, columns) else defaultW
-                val minH = if (vertical && provider.minResizeHeight > 0) span(provider.minResizeHeight, cellHeight, visibleRows) else defaultH
-                val maxW = if (!horizontal) defaultW else if (Build.VERSION.SDK_INT >= 31 && provider.maxResizeWidth > 0)
-                    (provider.maxResizeWidth / cellWidth).toInt().coerceIn(minW, columns) else columns
-                val maxH = if (!vertical) defaultH else if (Build.VERSION.SDK_INT >= 31 && provider.maxResizeHeight > 0)
-                    (provider.maxResizeHeight / cellHeight).toInt().coerceIn(minH, visibleRows) else visibleRows
-                Limits(minW, maxW, minH, maxH)
+                // Provider recommendations determine the starting size, not the host resize range.
+                Span(span(provider.minWidth, cellWidth, MAX_WIDGET_SPAN), span(provider.minHeight, cellHeight, MAX_WIDGET_SPAN))
             }
         }
         // Honor saved placements before moving unsaved items out of their way.
         visible.sortedBy { item ->
             val previous = stored(item)
-            val limit = limits.getValue(item)
+            val size = preferred.getValue(item)
             // Let an enlarged label find a new spot rather than displacing unchanged neighbors.
             when {
                 previous == null -> 2
-                limit.minW > previous.columns || limit.minH > previous.rows -> 1
+                item.widget == null && (size.width > previous.columns || size.height > previous.rows) -> 1
                 else -> 0
             }
         }.forEach { item ->
             val cell = stored(item) ?: return@forEach
-            val limit = limits.getValue(item)
-            val w = if (item.widget == null) limit.minW else cell.columns.coerceIn(limit.minW, limit.maxW)
-            val h = if (item.widget == null) limit.minH else cell.rows.coerceIn(limit.minH, limit.maxH)
+            val size = preferred.getValue(item)
+            val w = if (item.widget == null) size.width else cell.columns.coerceIn(1, MAX_WIDGET_SPAN)
+            val h = if (item.widget == null) size.height else cell.rows.coerceIn(1, MAX_WIDGET_SPAN)
             val candidate = GridCell(cell.column.coerceIn(0, columns - w), cell.row, w, h)
             if (candidate.fits(columns, cells.values)) cells[item] = candidate
         }
         visible.sortedBy { when { it.key == "clock" -> 0; it.widget != null -> 1; else -> 2 } }.forEach { item ->
             if (item in cells) return@forEach
-            val limit = limits.getValue(item)
-            val provider = item.widget
-            val w = provider?.let { span(it.minWidth, cellWidth, columns).coerceIn(limit.minW, limit.maxW) } ?: limit.minW
-            val h = provider?.let { span(it.minHeight, cellHeight, visibleRows).coerceIn(limit.minH, limit.maxH) } ?: limit.minH
-            cells[item] = firstGridCell(w, h, columns, cells.values)
+            val size = preferred.getValue(item)
+            cells[item] = firstGridCell(size.width, size.height, columns, cells.values)
         }
-        maxOffset = ((cells.values.maxOfOrNull { it.row + it.rows } ?: 0) - visibleRows + if (editing) 2 else 0).coerceAtLeast(0)
-        offset = offset.coerceIn(0, maxOffset)
+        val contentEnd = cells.values.maxOfOrNull { it.row + it.rows } ?: 0
+        maxOffset = (contentEnd - visibleRows).coerceAtLeast(0) + if (editing) 6 else 0
+        if (drag == null) offset = offset.coerceIn(0, maxOffset)
+        if (revealSelection) {
+            selected()?.value?.let { cell ->
+                if (cell.rows <= visibleRows) offset = offset.coerceIn((cell.row + cell.rows - visibleRows).coerceAtLeast(0), cell.row)
+            }
+            revealSelection = false
+        }
         cells.forEach { (item, cell) ->
-            val bounds = bounds(cell)
+            val bounds = bounds(displayCell(item, cell))
             val exact = View.MeasureSpec.EXACTLY
             item.view.measure(View.MeasureSpec.makeMeasureSpec(bounds.width(), exact),
                 View.MeasureSpec.makeMeasureSpec(bounds.height(), if (item.widget != null) exact else View.MeasureSpec.AT_MOST))
@@ -221,13 +243,14 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
 
     fun layout() {
         cells.forEach { (item, cell) ->
-            val b = bounds(cell)
+            val b = bounds(displayCell(item, cell))
             val y = b.top + (b.height() - item.view.measuredHeight) / 2
             item.view.layout(b.left, y, b.right, y + item.view.measuredHeight)
         }
         val x = (root.width - footer.measuredWidth) / 2
         val y = root.height - footerBottom - footerHeight
         footer.layout(x, y, x + footer.measuredWidth, y + footer.measuredHeight)
+        updateGestureExclusions()
     }
 
     private fun bounds(cell: GridCell) = Rect(
@@ -248,102 +271,169 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         }
     fun isFooter(x: Float, y: Float) = footer.isVisible && x >= footer.left && x < footer.right && y >= footer.top && y < footer.bottom
 
+    private fun selected() = cells.entries.firstOrNull { it.key.key == selectedKey }
+    private fun displayCell(item: Item, cell: GridCell) = drag?.takeIf { it.item == item }?.lastValid ?: cell
+
+    private fun handles(b: Rect): List<Handle> {
+        val spacious = b.width() >= 56.dpToPx() && b.height() >= 56.dpToPx()
+        return ResizeHandle.entries.filter { spacious || it.horizontal == 0 || it.vertical == 0 }.map { edge ->
+            Handle(edge, when (edge.horizontal) { -1 -> b.left.toFloat(); 1 -> b.right.toFloat(); else -> b.exactCenterX() },
+                when (edge.vertical) { -1 -> b.top.toFloat(); 1 -> b.bottom.toFloat(); else -> b.exactCenterY() })
+        }.filter { it.y >= top && it.y <= viewportBottom }
+    }
+
+    private val viewportBottom get() = top + visibleRows * cellHeight
+
     fun draw(canvas: Canvas) {
         if (!editing) return
         canvas.save()
         clip(canvas)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.dpToPx().toFloat()
-        paint.color = 0x66ffffff
-        for (row in 0 until visibleRows) for (column in 0 until columns) {
-            val b = bounds(GridCell(column, row + offset, 1, 1))
-            b.inset(2.dpToPx(), 2.dpToPx())
-            canvas.drawRect(b, paint)
+        paint.color = 0x35ffffff
+        val gridBounds = bounds(GridCell(0, offset, columns, visibleRows))
+        for (col in 0..columns) {
+            val x = gridBounds.left + col * cellWidth
+            canvas.drawLine(x, gridBounds.top.toFloat(), x, gridBounds.bottom.toFloat(), paint)
+        }
+        for (row in 0..visibleRows) {
+            val y = gridBounds.top + row * cellHeight
+            canvas.drawLine(gridBounds.left.toFloat(), y, gridBounds.right.toFloat(), y, paint)
         }
         cells.forEach { (item, cell) ->
             val selected = item.key == selectedKey
-            val target = if (selected) preview?.first ?: cell else cell
-            val b = bounds(target)
-            b.inset(3.dpToPx(), 3.dpToPx())
-            paint.color = if (!selected) Color.WHITE else if (preview?.second == false) 0xffff7676.toInt() else 0xff83e9ff.toInt()
-            paint.strokeWidth = if (selected) 3.dpToPx().toFloat() else 1.dpToPx().toFloat()
+            val b = bounds(displayCell(item, cell))
+            paint.color = if (selected) 0xcc15242b.toInt() else 0x80ffffff.toInt()
+            paint.strokeWidth = (if (selected) 4 else 1).dpToPx().toFloat()
             canvas.drawRect(b, paint)
-            if (selected && resizable(item)) {
-                paint.style = Paint.Style.FILL
-                canvas.drawCircle(b.right - 9.dpToPx().toFloat(), b.bottom - 9.dpToPx().toFloat(), 7.dpToPx().toFloat(), paint)
-                paint.style = Paint.Style.STROKE
+            if (selected) {
+                val accent = if (drag?.blocked == true) 0xffffac9c.toInt() else 0xffa4eaff.toInt()
+                paint.color = accent
+                paint.strokeWidth = 2.dpToPx().toFloat()
+                canvas.drawRect(b, paint)
+                if (item.widget != null) handles(b).forEach { h ->
+                    paint.style = Paint.Style.FILL
+                    paint.color = 0xff15242b.toInt()
+                    canvas.drawCircle(h.x, h.y, 7.dpToPx().toFloat(), paint)
+                    paint.color = accent
+                    canvas.drawCircle(h.x, h.y, 5.dpToPx().toFloat(), paint)
+                    paint.style = Paint.Style.STROKE
+                }
             }
         }
         canvas.restore()
     }
 
-    private fun resizable(item: Item) = item.widget != null && limits[item]?.let { it.minW < it.maxW || it.minH < it.maxH } == true
+    /** Reserve only the resize handles that sit inside Android's side-back gesture areas. */
+    private fun updateGestureExclusions() {
+        val item = selected()?.takeIf { editing && it.key.widget != null }
+        val insets = ViewCompat.getRootWindowInsets(root)?.getInsets(WindowInsetsCompat.Type.systemGestures())
+        val region = 22.dpToPx()
+        val next = if (item == null || insets == null) emptyList() else
+            handles(bounds(displayCell(item.key, item.value))).mapNotNull { h ->
+                val x = h.x.roundToInt()
+                val y = h.y.roundToInt()
+                if (x - region >= insets.left && x + region <= root.width - insets.right) null
+                else Rect((x - region).coerceAtLeast(0), (y - region).coerceAtLeast(0),
+                    (x + region).coerceAtMost(root.width), (y + region).coerceAtMost(root.height))
+            }
+        if (next != gestureExclusions) {
+            gestureExclusions = next
+            ViewCompat.setSystemGestureExclusionRects(root, next)
+        }
+    }
+
+    private fun handleAt(cell: GridCell, x: Float, y: Float): ResizeHandle? {
+        val b = bounds(cell)
+        val closest = handles(b).minByOrNull { hypot(it.x - x, it.y - y) } ?: return null
+        // On tiny widgets, leave the center available for moving the widget.
+        val inCenter = b.contains(x.toInt(), y.toInt()) && abs(b.exactCenterX() - x) < b.width() * .2f &&
+            abs(b.exactCenterY() - y) < b.height() * .2f
+        return closest.edge.takeIf { !inCenter && hypot(closest.x - x, closest.y - y) <= 22.dpToPx() }
+    }
 
     fun touch(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (outsideGrid(event.x, event.y)) return true
-                val hit = cells.entries.lastOrNull { bounds(it.value).contains(event.x.toInt(), event.y.toInt()) }
+                val x = event.x
+                val y = event.y
+                val current = selected()
+                val handle = current?.takeIf { it.key.widget != null }?.let { handleAt(it.value, x, y) }
+                val hit = if (handle != null) current else if (outsideGrid(x, y)) null else
+                    cells.entries.lastOrNull { bounds(it.value).contains(x.toInt(), y.toInt()) }
+                selectedKey = hit?.key?.key
                 if (hit != null) {
-                    val b = bounds(hit.value)
-                    val resize = hit.key.key == selectedKey && resizable(hit.key) &&
-                        event.x >= b.right - 34.dpToPx() && event.y >= b.bottom - 34.dpToPx()
-                    selectedKey = hit.key.key
-                    drag = Drag(hit.key, hit.value, event.x, event.y, resize)
-                } else {
-                    val selected = cells.entries.firstOrNull { it.key.key == selectedKey }
-                    if (selected != null) {
-                        val (item, cell) = selected
-                        val column = ((event.x - left) / cellWidth).toInt().coerceIn(0, columns - cell.columns)
-                        val row = ((event.y - top) / cellHeight).toInt() + offset
-                        val target = cell.copy(column = column, row = row)
-                        if (canPlace(item, target)) save(item, target)
-                    }
+                    drag = Drag(hit.key, hit.value, x, y, offset, handle)
+                    if (handle != null) (hit.key.view as HomeWidgetSlot).previewingSize = true
                 }
                 updateFooter()
+                updateGestureExclusions()
             }
-            MotionEvent.ACTION_MOVE -> drag?.let { d ->
-                val dx = ((event.x - d.x) / cellWidth).roundToInt()
-                val dy = ((event.y - d.y) / cellHeight).roundToInt()
-                val cell = d.cell
-                val limit = limits.getValue(d.item)
-                val candidate = if (d.resize) cell.copy(
-                    columns = (cell.columns + dx).coerceIn(limit.minW, minOf(limit.maxW, columns - cell.column)),
-                    rows = (cell.rows + dy).coerceIn(limit.minH, limit.maxH),
-                ) else cell.copy(column = (cell.column + dx).coerceIn(0, columns - cell.columns), row = (cell.row + dy).coerceIn(0, offset + visibleRows - 1))
-                preview = candidate to canPlace(d.item, candidate)
+            MotionEvent.ACTION_MOVE -> drag?.let { active ->
+                pointerX = event.x
+                pointerY = event.y
+                updateDrag(active, pointerX, pointerY)
+                scheduleAutoScroll(active, 120)
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val d = drag
-                val target = preview
-                if (event.actionMasked == MotionEvent.ACTION_UP && d != null && target?.second == true) save(d.item, target.first)
-                drag = null
-                preview = null
+            MotionEvent.ACTION_UP -> {
+                drag?.let { updateDrag(it, event.x, event.y) }
+                stopDrag(commit = true)
             }
+            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN -> stopDrag(commit = false)
         }
         root.invalidate()
         return true
     }
 
-    private fun chooseWidgetSize(item: Item) {
-        val current = cells[item] ?: return
-        val limit = limits.getValue(item)
-        val occupied = cells.filterKeys { it != item }.values
-        val sizes = (limit.minW..limit.maxW).flatMap { width ->
-            (limit.minH..limit.maxH).mapNotNull { height -> current.resizeTo(width, height, columns, occupied) }
+    private fun scheduleAutoScroll(active: Drag, delayMs: Long) {
+        if (edgeScrollDirection(pointerY, active) == 0) {
+            root.removeCallbacks(autoScroll)
+            autoScrollPending = false
+        } else if (!autoScrollPending) {
+            autoScrollPending = true
+            root.postDelayed(autoScroll, delayMs)
         }
-        val dialog = AlertDialog.Builder(context).setTitle(R.string.personal_widget_size)
-            .setNegativeButton(android.R.string.cancel, null)
-        if (!resizable(item)) dialog.setMessage(R.string.personal_widget_fixed_size)
-        else if (sizes.none { it != current }) dialog.setMessage(R.string.personal_widget_no_resize_space)
-        else dialog.setSingleChoiceItems(sizes.map {
-            context.getString(R.string.personal_widget_size_option, it.columns, it.rows)
-        }.toTypedArray(), sizes.indexOf(current)) { window, position ->
-            val target = sizes[position]
-            if (canPlace(item, target)) save(item, target)
-            window.dismiss()
+    }
+
+    private fun edgeScrollDirection(y: Float, active: Drag): Int {
+        if (!active.moved) return 0
+        val edge = 20.dpToPx()
+        val verticalResize = active.handle?.vertical
+        val end = maxOf(maxOffset, active.cell.row + active.cell.rows + MAX_WIDGET_SPAN - visibleRows + 2)
+        return when {
+            y < top + edge && offset > 0 && (verticalResize == null || verticalResize == -1 && active.lastValid.rows < MAX_WIDGET_SPAN) -> -1
+            y > viewportBottom - edge && offset < end && (verticalResize == null || verticalResize == 1 && active.lastValid.rows < MAX_WIDGET_SPAN) -> 1
+            else -> 0
         }
-        sizeDialog = dialog.show()
+    }
+
+    private fun updateDrag(active: Drag, x: Float, y: Float) {
+        if (!active.moved && hypot(x - active.x, y - active.y) <= touchSlop) return
+        active.moved = true
+        val dx = ((x - active.x) / cellWidth).roundToInt()
+        val dy = ((y - active.y) / cellHeight).roundToInt() + offset - active.startOffset
+        val old = active.cell
+        val next = active.handle?.let { old.resizeFrom(it, dx, dy) } ?: old.copy(
+            column = (old.column + dx).coerceIn(0, columns - old.columns), row = (old.row + dy).coerceAtLeast(0))
+        active.blocked = !canPlace(active.item, next)
+        if (!active.blocked && next != active.lastValid) {
+            active.lastValid = next
+            root.requestLayout()
+        }
+        root.invalidate()
+    }
+
+    private fun stopDrag(commit: Boolean) {
+        root.removeCallbacks(autoScroll)
+        autoScrollPending = false
+        val active = drag ?: return
+        drag = null
+        (active.item.view as? HomeWidgetSlot)?.previewingSize = false
+        if (commit && canPlace(active.item, active.lastValid) && active.lastValid != active.cell) {
+            save(active.item, active.lastValid)
+            root.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+        root.requestLayout()
     }
 
     private fun canPlace(item: Item, cell: GridCell) = cell.fits(columns, cells.filterKeys { it != item }.values)
@@ -353,7 +443,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         prefs.edit {
             cells.forEach { (view, current) ->
                 val b = if (view == item) cell else current
-                putString(prefix + view.key, "${b.column},${b.row},${b.columns},${b.rows}")
+                putString(prefix + view.key, b.encode())
             }
         }
         root.requestLayout()
@@ -371,7 +461,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         next.isEnabled = offset < maxOffset
         done.isVisible = editing
         remove.isVisible = editing && selectedKey?.startsWith("widget_") == true
-        resize.isVisible = editing && selectedKey?.let { it.startsWith("widget_") || it.startsWith("app_") } == true
+        resize.isVisible = editing && selectedKey?.startsWith("app_") == true
         footer.isVisible = editing || maxOffset > 0
     }
 }

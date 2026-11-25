@@ -13,6 +13,19 @@ import android.widget.FrameLayout
 class HomeWidgetSlot @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : FrameLayout(context, attrs) {
     internal var provider: AppWidgetProviderInfo? = null
     internal var onHold: (() -> Unit)? = null
+    internal var onSizeCommitted: ((Int, Int) -> Unit)? = null
+    internal var previewingSize = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (!value) requestLayout()
+        }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (!previewingSize && width > 0 && height > 0) onSizeCommitted?.invoke(width, height)
+    }
+
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private var downTime = 0L
     private var downX = 0f

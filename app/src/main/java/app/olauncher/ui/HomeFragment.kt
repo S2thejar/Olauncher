@@ -181,7 +181,7 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
 
     private fun startGrid(id: Int? = null) {
         binding.root.grid.start(id) { renderHomeWidget() }
-        requireContext().showToast(R.string.personal_grid_hint)
+        requireContext().showToast(if (id == null) R.string.personal_grid_hint else R.string.personal_widget_drag_hint)
     }
 
     override fun onResume() {
