@@ -3,6 +3,7 @@ package app.olauncher.ui
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class HomeGridTest {
@@ -24,5 +25,16 @@ class HomeGridTest {
         val occupied = listOf(GridCell(0, 0, 2, 2), GridCell(2, 0, 2, 1))
         assertEquals(GridCell(2, 1, 2, 1), firstGridCell(2, 1, 4, occupied))
         assertEquals(GridCell(0, 2, 4, 2), firstGridCell(4, 2, 4, occupied))
+    }
+    @Test fun widgetCanGrowTowardLeftWhenAtRightEdge() {
+        val widget = GridCell(2, 3, 2, 2)
+        assertEquals(GridCell(1, 3, 3, 2), widget.resizeTo(3, 2, 4, emptyList()))
+    }
+
+    @Test fun widgetCanGrowUpwardInsteadOfOverlappingAnotherItem() {
+        val widget = GridCell(1, 3, 2, 2)
+        val below = GridCell(1, 5, 2, 1)
+        assertEquals(GridCell(1, 2, 2, 3), widget.resizeTo(2, 3, 4, listOf(below)))
+        assertNull(widget.resizeTo(2, 3, 4, listOf(below, GridCell(1, 2, 2, 1))))
     }
 }

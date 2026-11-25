@@ -18,3 +18,14 @@ internal fun firstGridCell(columns: Int, rows: Int, width: Int, occupied: Collec
     }
     return GridCell(0, lastRow, columns, rows)
 }
+
+/** Resize in place when possible, or extend toward the other edge while keeping the old footprint anchored. */
+internal fun GridCell.resizeTo(newWidth: Int, newHeight: Int, gridWidth: Int, occupied: Collection<GridCell>): GridCell? {
+    val firstColumn = if (newWidth > columns) column + columns - newWidth else column
+    val firstRow = if (newHeight > rows) row + rows - newHeight else row
+    for (y in row downTo firstRow) for (x in column downTo firstColumn) {
+        val candidate = GridCell(x, y, newWidth, newHeight)
+        if (candidate.fits(gridWidth, occupied)) return candidate
+    }
+    return null
+}

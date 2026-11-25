@@ -15,7 +15,10 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import app.olauncher.R
 import app.olauncher.helper.dpToPx
@@ -39,6 +42,10 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     private val columns get() = if (landscape) 6 else 4
     private val prefix get() = if (landscape) "land_" else "port_"
     private val top get() = root.paddingTop + 48.dpToPx()
+    // The activity uses FLAG_LAYOUT_NO_LIMITS, so keep editor actions outside system navigation.
+    private val footerBottom get() = maxOf(root.paddingBottom, 48.dpToPx(),
+        ViewCompat.getRootWindowInsets(root)?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0)
+    private val footerHeight get() = 48.dpToPx()
     private val left get() = root.paddingLeft + 16.dpToPx()
     private var cellWidth = 1f
     private var cellHeight = 1f
@@ -49,6 +56,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     private var drag: Drag? = null
     private var preview: Pair<GridCell, Boolean>? = null
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    var onResizeTitle: ((View) -> Unit)? = null
     var onRemoveWidget: ((Int) -> Unit)? = null
     var onEditChanged: ((Boolean) -> Unit)? = null
     val widgetViews = linkedMapOf<Int, HomeWidgetSlot>()
@@ -57,23 +65,35 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         setText(label)
         isAllCaps = false
         typeface = Typeface.DEFAULT_BOLD
-        minimumWidth = 0
-        minWidth = 0
+        minimumWidth = 40.dpToPx()
+        minWidth = 40.dpToPx()
         setPadding(4.dpToPx(), 0, 4.dpToPx(), 0)
+        maxLines = 1
         setOnClickListener { action() }
     }
-    private val previous = button(R.string.personal_grid_up) { scroll(-1) }
-    private val next = button(R.string.personal_grid_down) { scroll(1) }
+    private val previous = button(R.string.personal_grid_up) { scroll(-1) }.apply {
+        contentDescription = context.getString(R.string.personal_grid_previous_rows)
+    }
+    private val next = button(R.string.personal_grid_down) { scroll(1) }.apply {
+        contentDescription = context.getString(R.string.personal_grid_next_rows)
+    }
     private val remove = button(R.string.personal_widget_remove_short) {
         selectedKey?.removePrefix("widget_")?.toIntOrNull()?.let { onRemoveWidget?.invoke(it) }
     }
+    private val resize = button(R.string.personal_resize) {
+        val item = cells.keys.firstOrNull { it.key == selectedKey } ?: return@button
+        if (item.widget != null) chooseWidgetSize(item) else onResizeTitle?.invoke(item.view)
+    }
+    private var sizeDialog: AlertDialog? = null
     private val done = button(R.string.personal_grid_done) { finish() }
     private val footer = LinearLayout(context).apply {
         gravity = Gravity.CENTER
-        listOf(previous, next, remove, done).forEach { addView(it) }
+        listOf(previous, next, remove, resize, done).forEach {
+            addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
         visibility = View.GONE
-        root.addView(this, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 48.dpToPx(),
-            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = 16.dpToPx() })
+        root.addView(this, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, footerHeight,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
     }
 
     fun bind(clock: View, labels: List<View>) {
@@ -108,6 +128,8 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     fun finish() {
         if (!editing) return
         editing = false
+        sizeDialog?.dismiss()
+        sizeDialog = null
         selectedKey = null
         drag = null
         preview = null
@@ -129,7 +151,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
     }
 
     fun measure(width: Int, height: Int) {
-        val usableHeight = (height - top - root.paddingBottom - 72.dpToPx()).coerceAtLeast(48.dpToPx())
+        val usableHeight = (height - top - footerBottom - footerHeight - 8.dpToPx()).coerceAtLeast(48.dpToPx())
         visibleRows = (usableHeight / 48.dpToPx()).coerceAtLeast(1)
         cellHeight = usableHeight.toFloat() / visibleRows
         cellWidth = (width - left - root.paddingRight - 16.dpToPx()).coerceAtLeast(columns).toFloat() / columns
@@ -159,7 +181,16 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
             }
         }
         // Honor saved placements before moving unsaved items out of their way.
-        visible.forEach { item ->
+        visible.sortedBy { item ->
+            val previous = stored(item)
+            val limit = limits.getValue(item)
+            // Let an enlarged label find a new spot rather than displacing unchanged neighbors.
+            when {
+                previous == null -> 2
+                limit.minW > previous.columns || limit.minH > previous.rows -> 1
+                else -> 0
+            }
+        }.forEach { item ->
             val cell = stored(item) ?: return@forEach
             val limit = limits.getValue(item)
             val w = if (item.widget == null) limit.minW else cell.columns.coerceIn(limit.minW, limit.maxW)
@@ -185,7 +216,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         }
         updateFooter()
         footer.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.AT_MOST),
-            View.MeasureSpec.makeMeasureSpec(48.dpToPx(), View.MeasureSpec.EXACTLY))
+            View.MeasureSpec.makeMeasureSpec(footerHeight, View.MeasureSpec.EXACTLY))
     }
 
     fun layout() {
@@ -195,7 +226,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
             item.view.layout(b.left, y, b.right, y + item.view.measuredHeight)
         }
         val x = (root.width - footer.measuredWidth) / 2
-        val y = root.height - root.paddingBottom - 64.dpToPx()
+        val y = root.height - footerBottom - footerHeight
         footer.layout(x, y, x + footer.measuredWidth, y + footer.measuredHeight)
     }
 
@@ -294,6 +325,27 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         return true
     }
 
+    private fun chooseWidgetSize(item: Item) {
+        val current = cells[item] ?: return
+        val limit = limits.getValue(item)
+        val occupied = cells.filterKeys { it != item }.values
+        val sizes = (limit.minW..limit.maxW).flatMap { width ->
+            (limit.minH..limit.maxH).mapNotNull { height -> current.resizeTo(width, height, columns, occupied) }
+        }
+        val dialog = AlertDialog.Builder(context).setTitle(R.string.personal_widget_size)
+            .setNegativeButton(android.R.string.cancel, null)
+        if (!resizable(item)) dialog.setMessage(R.string.personal_widget_fixed_size)
+        else if (sizes.none { it != current }) dialog.setMessage(R.string.personal_widget_no_resize_space)
+        else dialog.setSingleChoiceItems(sizes.map {
+            context.getString(R.string.personal_widget_size_option, it.columns, it.rows)
+        }.toTypedArray(), sizes.indexOf(current)) { window, position ->
+            val target = sizes[position]
+            if (canPlace(item, target)) save(item, target)
+            window.dismiss()
+        }
+        sizeDialog = dialog.show()
+    }
+
     private fun canPlace(item: Item, cell: GridCell) = cell.fits(columns, cells.filterKeys { it != item }.values)
     private fun save(item: Item, cell: GridCell) {
         if (cells[item] == cell) return
@@ -319,6 +371,7 @@ internal class HomeGridEditor(private val root: HomePositioningLayout) {
         next.isEnabled = offset < maxOffset
         done.isVisible = editing
         remove.isVisible = editing && selectedKey?.startsWith("widget_") == true
+        resize.isVisible = editing && selectedKey?.let { it.startsWith("widget_") || it.startsWith("app_") } == true
         footer.isVisible = editing || maxOffset > 0
     }
 }

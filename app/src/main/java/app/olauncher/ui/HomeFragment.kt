@@ -68,9 +68,10 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
 
     private var appearance = PersonalAppearance()
     private lateinit var homeWidgets: HomeWidgetStore
+    private lateinit var titleSizing: HomeTitleSizing
     private var homeMenu: AlertDialog? = null
     private var stockWidgetId: Int? = null
-    private data class OriginalText(val typeface: Typeface?, val colors: ColorStateList)
+    private data class OriginalText(val typeface: Typeface?, val colors: ColorStateList, val sizePx: Float)
     private val originalText = mutableMapOf<TextView, OriginalText>()
     private fun homeLabels() = with(binding) { listOf(homeApp1, homeApp2, homeApp3, homeApp4, homeApp5, homeApp6, homeApp7, homeApp8) }
 
@@ -83,6 +84,7 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
         super.onViewCreated(view, savedInstanceState)
         prefs = Prefs(requireContext())
         homeWidgets = HomeWidgetStore(requireContext())
+        titleSizing = HomeTitleSizing(requireContext())
         viewModel = activity?.run {
             ViewModelProvider(this)[MainViewModel::class.java]
         } ?: throw Exception("Invalid Activity")
@@ -90,7 +92,7 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
         deviceManager = context?.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
 
         (homeLabels() + listOf(binding.date, binding.clock)).forEach {
-            originalText[it] = OriginalText(it.typeface, it.textColors)
+            originalText[it] = OriginalText(it.typeface, it.textColors, it.textSize)
         }
         appearance = PersonalAppearance.load(requireContext())
         initObservers()
@@ -103,6 +105,7 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
         }
         requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, back)
         editor.onEditChanged = { back.isEnabled = it }
+        editor.onResizeTitle = { view -> showTitleSize(view as TextView) }
         editor.onRemoveWidget = { id ->
             homeMenu = AlertDialog.Builder(requireContext())
                 .setMessage(R.string.personal_widget_remove_confirm)
@@ -236,7 +239,25 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
             )
     }
 
+    private fun showTitleSize(label: TextView) {
+        val slot = homeLabels().indexOf(label)
+        val base = originalText[label]?.sizePx ?: return
+        homeMenu = titleSizing.dialog(label, base, slot) { titleSizing.apply(label, base, slot) }
+    }
+
     override fun onLongClick(view: View): Boolean {
+        if (view is TextView && view in homeLabels() && view.text.isNotEmpty()) {
+            homeMenu = AlertDialog.Builder(requireContext()).setTitle(view.text)
+                .setItems(arrayOf(getString(R.string.personal_title_size), getString(R.string.personal_change_home_app))) { _, choice ->
+                    if (choice == 0) showTitleSize(view) else editHomeApp(view)
+                }
+                .setNegativeButton(android.R.string.cancel, null).show()
+            return true
+        }
+        return editHomeApp(view)
+    }
+
+    private fun editHomeApp(view: View): Boolean {
         when (view.id) {
             R.id.homeApp1 -> showAppList(Constants.FLAG_SET_HOME_APP_1, prefs.appName1.isNotEmpty(), true)
             R.id.homeApp2 -> showAppList(Constants.FLAG_SET_HOME_APP_2, prefs.appName2.isNotEmpty(), true)
@@ -385,8 +406,11 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
         val widgetVisible = renderHomeWidget()
         if (!binding.root.grid.enabled) binding.root.setPositions(widgetVisible || appearance.customLayout || appearance.clock == HomeClock.STACKED,
             appearance.clockVertical, appearance.appVertical)
-        homeLabels().forEach { label ->
-            originalText[label]?.let { label.applyHomeText(appearance.font, appearance.labels, it.typeface, it.colors, prefs.boldFont) }
+        homeLabels().forEachIndexed { slot, label ->
+            originalText[label]?.let {
+                label.applyHomeText(appearance.font, appearance.labels, it.typeface, it.colors, prefs.boldFont)
+                titleSizing.apply(label, it.sizePx, slot)
+            }
         }
         listOf(binding.date, binding.clock).forEach { label ->
             originalText[label]?.let { label.applyHomeText(appearance.font, appearance.clockColor, it.typeface, it.colors) }
