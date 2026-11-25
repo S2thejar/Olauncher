@@ -4,7 +4,10 @@ import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.LauncherApps
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Typeface
+import android.text.format.DateFormat
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -29,7 +32,12 @@ import app.olauncher.R
 import app.olauncher.data.AppModel
 import app.olauncher.data.Constants
 import app.olauncher.data.Prefs
+import app.olauncher.data.HomeClock
+import app.olauncher.data.HomeHorizontal
+import app.olauncher.data.PersonalAppearance
+import app.olauncher.data.applyHomeText
 import app.olauncher.databinding.FragmentHomeBinding
+import app.olauncher.helper.HomeWidgetStore
 import app.olauncher.helper.appUsagePermissionGranted
 import app.olauncher.helper.dpToPx
 import app.olauncher.helper.expandNotificationDrawer
@@ -57,6 +65,12 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
     private var _binding: FragmentHomeBinding? = null
     private val binding get() = _binding!!
 
+    private var appearance = PersonalAppearance()
+    private lateinit var homeWidgets: HomeWidgetStore
+    private data class OriginalText(val typeface: Typeface?, val colors: ColorStateList)
+    private val originalText = mutableMapOf<TextView, OriginalText>()
+    private fun homeLabels() = with(binding) { listOf(homeApp1, homeApp2, homeApp3, homeApp4, homeApp5, homeApp6, homeApp7, homeApp8) }
+
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentHomeBinding.inflate(inflater, container, false)
         return binding.root
@@ -65,20 +79,51 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         prefs = Prefs(requireContext())
+        homeWidgets = HomeWidgetStore(requireContext())
         viewModel = activity?.run {
             ViewModelProvider(this)[MainViewModel::class.java]
         } ?: throw Exception("Invalid Activity")
 
         deviceManager = context?.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
 
+        (homeLabels() + listOf(binding.date, binding.clock)).forEach {
+            originalText[it] = OriginalText(it.typeface, it.textColors)
+        }
+        appearance = PersonalAppearance.load(requireContext())
         initObservers()
         setHomeAlignment(prefs.homeAlignment)
         initSwipeTouchListener()
         initClickListeners()
     }
 
+    override fun onStart() {
+        super.onStart()
+        runCatching { homeWidgets.host.startListening() }
+    }
+
+    override fun onStop() {
+        runCatching { homeWidgets.host.stopListening() }
+        super.onStop()
+    }
+
+    private fun renderHomeWidget(): Boolean {
+        val slot = binding.homeWidgetSlot
+        val parent = binding.homeAppsLayout
+        val desiredIndex = if (homeWidgets.above) 0 else parent.childCount - 1
+        if (parent.indexOfChild(slot) != desiredIndex) {
+            parent.removeView(slot)
+            parent.addView(slot, desiredIndex)
+        }
+        slot.removeAllViews()
+        val attached = runCatching { homeWidgets.attach(slot) }.getOrDefault(false)
+        slot.isVisible = attached
+        return attached
+    }
+
     override fun onResume() {
         super.onResume()
+        appearance = PersonalAppearance.load(requireContext())
+        applyAppearance()
         populateHomeScreen(false)
         viewModel.isOlauncherDefault()
         if (prefs.showStatusBar) showStatusBar()
@@ -257,21 +302,44 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
     private fun setHomeAlignment(horizontalGravity: Int = prefs.homeAlignment) {
         val verticalGravity = if (prefs.homeBottomAlignment) Gravity.BOTTOM else Gravity.CENTER_VERTICAL
         binding.homeAppsLayout.gravity = horizontalGravity or verticalGravity
-        binding.dateTimeLayout.gravity = horizontalGravity
-        binding.homeApp1.gravity = horizontalGravity
-        binding.homeApp2.gravity = horizontalGravity
-        binding.homeApp3.gravity = horizontalGravity
-        binding.homeApp4.gravity = horizontalGravity
-        binding.homeApp5.gravity = horizontalGravity
-        binding.homeApp6.gravity = horizontalGravity
-        binding.homeApp7.gravity = horizontalGravity
-        binding.homeApp8.gravity = horizontalGravity
+        val clockGravity = when (appearance.clockHorizontal) {
+            HomeHorizontal.DEFAULT -> horizontalGravity
+            HomeHorizontal.START -> Gravity.START
+            HomeHorizontal.CENTER -> Gravity.CENTER_HORIZONTAL
+            HomeHorizontal.END -> Gravity.END
+        }
+        binding.dateTimeLayout.gravity = clockGravity
+        if (appearance.clockHorizontal != HomeHorizontal.DEFAULT || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            val clockParams = binding.dateTimeLayout.layoutParams as FrameLayout.LayoutParams
+            val landscapeDefault = appearance.clockHorizontal == HomeHorizontal.DEFAULT && resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            clockParams.gravity = Gravity.TOP or if (landscapeDefault) Gravity.CENTER_HORIZONTAL else clockGravity
+            binding.dateTimeLayout.layoutParams = clockParams
+        }
+        homeLabels().forEach { it.gravity = horizontalGravity }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyAppearance() {
+        setHomeAlignment()
+        binding.root.setPositions(renderHomeWidget() || appearance.customLayout || appearance.clock == HomeClock.STACKED, appearance.clockVertical, appearance.appVertical)
+        homeLabels().forEach { label ->
+            originalText[label]?.let { label.applyHomeText(appearance.font, appearance.labels, it.typeface, it.colors, prefs.boldFont) }
+        }
+        listOf(binding.date, binding.clock).forEach { label ->
+            originalText[label]?.let { label.applyHomeText(appearance.font, appearance.clockColor, it.typeface, it.colors) }
+        }
+        val stacked = appearance.clock == HomeClock.STACKED
+        val locale = resources.configuration.locales[0]
+        binding.clock.format12Hour = if (stacked) "h'\n'mm" else "h:mm"
+        binding.clock.format24Hour = if (stacked) "HH'\n'mm" else DateFormat.getBestDateTimePattern(locale, "Hm")
     }
 
     private fun populateDateTime() {
-        binding.dateTimeLayout.isVisible = prefs.dateTimeVisibility != Constants.DateTime.OFF
-        binding.clock.isVisible = Constants.DateTime.isTimeVisible(prefs.dateTimeVisibility)
-        binding.date.isVisible = Constants.DateTime.isDateVisible(prefs.dateTimeVisibility)
+        val showTime = Constants.DateTime.isTimeVisible(prefs.dateTimeVisibility) && appearance.clock != HomeClock.HIDDEN
+        val showDate = Constants.DateTime.isDateVisible(prefs.dateTimeVisibility)
+        binding.dateTimeLayout.isVisible = showTime || showDate
+        binding.clock.isVisible = showTime
+        binding.date.isVisible = showDate
 
 //        var dateText = SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(Date())
         val dateFormat = SimpleDateFormat("EEE, d MMM", Locale.getDefault())
@@ -721,6 +789,7 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
     }
 
     override fun onDestroyView() {
+        originalText.clear()
         super.onDestroyView()
         _binding = null
     }

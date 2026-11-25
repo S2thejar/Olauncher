@@ -16,11 +16,15 @@ import android.view.Menu
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.bundleOf
 import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.fragment.findNavController
 import app.olauncher.BuildConfig
+import app.olauncher.MainActivity
 import app.olauncher.MainViewModel
 import app.olauncher.R
 import app.olauncher.data.Constants
@@ -43,6 +47,8 @@ import app.olauncher.helper.rateApp
 import app.olauncher.helper.setPlainWallpaper
 import app.olauncher.helper.shareApp
 import app.olauncher.helper.OlDialog
+import app.olauncher.helper.WidgetSetup
+import app.olauncher.helper.PhotoWallpapers
 import app.olauncher.helper.showPopupMenu
 import app.olauncher.helper.showStatusBar
 import app.olauncher.helper.showToast
@@ -59,6 +65,32 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
     private val binding get() = _binding!!
     private val showPentastic = System.currentTimeMillis() % 2 == 0L
     private var dialog: OlDialog? = null
+    private val widgetSetup = WidgetSetup(this, ::setPersonalSetupInProgress)
+    private var personalDialog: AlertDialog? = null
+    private val pickWallpapers = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(PhotoWallpapers.MAX_PHOTOS),
+    ) { uris ->
+        setPersonalSetupInProgress(false)
+        if (uris.isEmpty()) return@registerForActivityResult
+        val photos = PhotoWallpapers(requireContext())
+        val count = photos.replace(uris)
+        if (count < uris.size) requireContext().showToast(R.string.personal_photo_grants)
+        if (count > 0) showPhotoWallpaperMenu()
+    }
+
+    private fun setPersonalSetupInProgress(active: Boolean) {
+        (activity as? MainActivity)?.personalSetupInProgress = active
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        widgetSetup.restore(savedInstanceState)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        widgetSetup.save(outState)
+    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentSettingsBinding.inflate(inflater, container, false)
@@ -170,6 +202,9 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
     }
 
     private fun initClickListeners() {
+        binding.personalWallpapers.setOnClickListener { showPhotoWallpaperMenu() }
+        binding.personalWidget.setOnClickListener { personalDialog = widgetSetup.manage() }
+        binding.personalAppearance.setOnClickListener { personalDialog = showAppearanceDialog(requireContext()) }
         binding.olauncherHiddenApps.setOnClickListener(this)
         binding.appInfo.setOnClickListener(this)
         binding.setLauncher.setOnClickListener(this)
@@ -430,7 +465,42 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
         }
     }
 
+    private fun showPhotoWallpaperMenu() {
+        val photos = PhotoWallpapers(requireContext())
+        val items = mutableListOf(getString(R.string.personal_photo_choose))
+        if (photos.count > 0) {
+            items += getString(if (photos.enabled) R.string.personal_photo_pause else R.string.personal_photo_resume)
+            items += getString(R.string.personal_photo_next)
+            items += getString(R.string.personal_photo_clear)
+        }
+        personalDialog = AlertDialog.Builder(requireContext())
+            .setTitle(resources.getQuantityString(R.plurals.personal_photo_count, photos.count, photos.count))
+            .setItems(items.toTypedArray()) { _, choice ->
+                when (choice) {
+                    0 -> {
+                        setPersonalSetupInProgress(true)
+                        try {
+                            pickWallpapers.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        } catch (_: android.content.ActivityNotFoundException) {
+                            setPersonalSetupInProgress(false)
+                            requireContext().showToast(R.string.personal_photo_picker_unavailable)
+                        }
+                    }
+                    1 -> if (photos.enabled) photos.pause() else {
+                        photos.resume()
+                        photos.next()
+                        populateWallpaperText()
+                    }
+                    2 -> { photos.next(); populateWallpaperText() }
+                    3 -> photos.clear()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun removeWallpaper() {
+        PhotoWallpapers(requireContext()).pause()
         if (requireContext().isEinkDisplay()) {
             prefs.appTheme = AppCompatDelegate.MODE_NIGHT_NO
             setPlainWallpaper(requireContext(), android.R.color.white)
@@ -452,6 +522,7 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
         prefs.dailyWallpaper = !prefs.dailyWallpaper
         populateWallpaperText()
         if (prefs.dailyWallpaper) {
+            PhotoWallpapers(requireContext()).pause()
             viewModel.setWallpaperWorker()
             showWallpaperToasts()
         } else viewModel.cancelWallpaperWorker()
@@ -704,6 +775,8 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
     }
 
     override fun onDestroyView() {
+        personalDialog?.dismiss()
+        personalDialog = null
         // Dismissing the text size dialog applies any pending scale via its dismiss listener
         dialog?.dismiss()
         dialog = null
@@ -713,6 +786,7 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
     }
 
     override fun onDestroy() {
+        if (isRemoving && activity?.isChangingConfigurations != true) widgetSetup.cancel()
         viewModel.checkForMessages.call()
         super.onDestroy()
     }

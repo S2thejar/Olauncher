@@ -24,6 +24,7 @@ import androidx.navigation.findNavController
 import app.olauncher.data.Constants
 import app.olauncher.data.Prefs
 import app.olauncher.databinding.ActivityMainBinding
+import app.olauncher.helper.PhotoWallpapers
 import app.olauncher.helper.getColorFromAttr
 import app.olauncher.helper.hasBeenDays
 import app.olauncher.helper.hasBeenHours
@@ -57,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var timerJob: Job? = null
     private var isResumed = false
+    internal var personalSetupInProgress = false
     private var profileReceiver: BroadcastReceiver? = null
     private var launcherAppsCallback: LauncherApps.Callback? = null
     private var messageDialog: OlDialog? = null
@@ -74,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        personalSetupInProgress = savedInstanceState?.getBoolean("personal_setup") == true
         prefs = Prefs(this)
         if (isEinkDisplay()) prefs.appTheme = AppCompatDelegate.MODE_NIGHT_NO
         AppCompatDelegate.setDefaultNightMode(prefs.appTheme)
@@ -166,14 +169,19 @@ class MainActivity : AppCompatActivity() {
         launcherApps.registerCallback(launcherAppsCallback!!)
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("personal_setup", personalSetupInProgress)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onStop() {
         isResumed = false
-        backToHomeScreen()
+        if (!personalSetupInProgress) backToHomeScreen()
         super.onStop()
     }
 
     override fun onUserLeaveHint() {
-        backToHomeScreen()
+        if (!personalSetupInProgress) backToHomeScreen()
         super.onUserLeaveHint()
     }
 
@@ -219,6 +227,7 @@ class MainActivity : AppCompatActivity() {
                     prefs.wallpaperMsgShown = true
                     prefs.userState = Constants.UserState.REVIEW
                     showMessage(R.string.did_you_know, R.string.wallpaper_message, R.string.enable) {
+                        PhotoWallpapers(this).pause()
                         prefs.dailyWallpaper = true
                         viewModel.setWallpaperWorker()
                         showToast(getString(R.string.your_wallpaper_will_update_shortly))
@@ -304,7 +313,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             Constants.UserState.WALLPAPER -> {
-                if (prefs.wallpaperMsgShown || prefs.dailyWallpaper)
+                if (prefs.wallpaperMsgShown || prefs.dailyWallpaper || PhotoWallpapers(this).count > 0)
                     prefs.userState = Constants.UserState.REVIEW
                 else if (isOlauncherDefault(this))
                     viewModel.showDialog.postValue(Constants.Dialog.WALLPAPER)

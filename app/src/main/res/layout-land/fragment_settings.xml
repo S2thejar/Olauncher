@@ -104,6 +104,39 @@
                     android:text="@string/home_screen"
                     android:textColor="?attr/primaryColor" />
 
+                <TextView
+                    android:id="@+id/personalAppearance"
+                    style="@style/TextSmall"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="8dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:text="@string/personal_appearance" />
+
+                <TextView
+                    android:id="@+id/personalWidget"
+                    style="@style/TextSmall"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="8dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:text="@string/personal_widget" />
+
+                <TextView
+                    android:id="@+id/personalWallpapers"
+                    style="@style/TextSmall"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="8dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:text="@string/personal_wallpapers" />
+
                 <FrameLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

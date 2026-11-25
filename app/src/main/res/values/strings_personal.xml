@@ -1,0 +1,47 @@
+<resources>
+    <string name="personal_appearance">Appearance and clock</string>
+    <string name="personal_analog_clock">Analog clock</string>
+    <string name="personal_font">Home font</string>
+    <string name="personal_clock_type">Clock style</string>
+    <string name="personal_app_vertical">App list position</string>
+    <string name="personal_clock_vertical">Clock vertical position</string>
+    <string name="personal_clock_horizontal">Clock horizontal alignment</string>
+    <string name="personal_app_color">App label color</string>
+    <string name="personal_clock_color">Clock and date color</string>
+    <string name="personal_hex_hint">Default, or enter #RRGGBB</string>
+    <string name="personal_hex_error">Enter six hex digits, for example #E8E8E8.</string>
+    <string name="personal_app_preview">Calendar · Music</string>
+    <string name="personal_apply">Apply</string>
+    <string name="personal_reset">Reset</string>
+    <string-array name="personal_fonts">
+        <item>Default</item><item>Sans serif</item><item>Serif</item><item>Monospace</item><item>Condensed</item>
+    </string-array>
+    <string-array name="personal_clock_types">
+        <item>Digital (default)</item><item>Stacked digital</item><item>Hide clock</item>
+    </string-array>
+    <string-array name="personal_vertical_positions">
+        <item>Default</item><item>Top</item><item>Middle</item><item>Bottom</item>
+    </string-array>
+    <string-array name="personal_horizontal_positions">
+        <item>Follow app alignment</item><item>Start</item><item>Center</item><item>End</item>
+    </string-array>
+    <string name="personal_widget">Home widget</string>
+    <string name="personal_widget_add">Choose a home widget</string>
+    <string name="personal_widget_remove">Remove widget</string>
+    <string name="personal_widget_move_above">Move above app list</string>
+    <string name="personal_widget_move_below">Move below app list</string>
+    <string name="personal_widget_none">No installed apps expose home widgets.</string>
+    <string name="personal_widget_failed">Could not add this widget.</string>
+    <string name="personal_wallpapers">Photo wallpaper rotation</string>
+    <string name="personal_photo_choose">Choose or replace photos</string>
+    <string name="personal_photo_resume">Start daily shuffle</string>
+    <string name="personal_photo_pause">Pause daily shuffle</string>
+    <string name="personal_photo_next">Next photo now</string>
+    <string name="personal_photo_clear">Clear the photo selection</string>
+    <string name="personal_photo_picker_unavailable">No photo picker is available.</string>
+    <string name="personal_photo_grants">One or more photos could not be kept for rotation.</string>
+    <plurals name="personal_photo_count">
+        <item quantity="one">%d wallpaper photo selected</item>
+        <item quantity="other">%d wallpaper photos selected</item>
+    </plurals>
+</resources>

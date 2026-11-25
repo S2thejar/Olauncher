@@ -6,13 +6,29 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import app.olauncher.data.Constants
 import app.olauncher.data.Prefs
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 class WallpaperWorker(appContext: Context, workerParams: WorkerParameters) : CoroutineWorker(appContext, workerParams) {
 
     private val prefs = Prefs(applicationContext)
 
-    override suspend fun doWork(): Result = coroutineScope {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        wallpaperLock.withLock { applyWallpaper() }
+    }
+
+    private suspend fun applyWallpaper(): Result {
+        val photos = PhotoWallpapers(applicationContext)
+        when (inputData.getString(PhotoWallpapers.MODE)) {
+            PhotoWallpapers.PHOTO_MANUAL -> return if (!prefs.dailyWallpaper && photos.applyNext()) Result.success() else Result.failure()
+            PhotoWallpapers.PHOTO_PERIODIC -> {
+                if (photos.enabled && !prefs.dailyWallpaper) photos.applyNext()
+                return Result.success()
+            }
+        }
+        if (photos.enabled) return Result.success()
         val success =
             if (prefs.appTheme == AppCompatDelegate.MODE_NIGHT_YES && isOlauncherDefault(applicationContext).not())
                 true
@@ -28,11 +44,13 @@ class WallpaperWorker(appContext: Context, workerParams: WorkerParameters) : Cor
             } else
                 true
 
-        if (success)
+        return if (success)
             Result.success()
         else
             Result.retry()
     }
+
+    companion object { private val wallpaperLock = Mutex() }
 
     private fun checkWallpaperType(): String {
         return when (prefs.appTheme) {
