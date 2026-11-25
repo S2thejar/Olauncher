@@ -83,7 +83,7 @@
         android:orientation="vertical"
         android:paddingVertical="@dimen/home_app_padding_vertical">
 
-        <FrameLayout
+        <app.olauncher.ui.HomeWidgetSlot
             android:id="@+id/homeWidgetSlot"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

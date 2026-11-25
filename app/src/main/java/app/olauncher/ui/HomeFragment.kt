@@ -7,7 +7,6 @@ import android.content.pm.LauncherApps
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Typeface
-import android.text.format.DateFormat
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -17,6 +16,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.widget.FrameLayout
+import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AlertDialog
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.RequiresApi
@@ -67,6 +68,8 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
 
     private var appearance = PersonalAppearance()
     private lateinit var homeWidgets: HomeWidgetStore
+    private var homeMenu: AlertDialog? = null
+    private var stockWidgetId: Int? = null
     private data class OriginalText(val typeface: Typeface?, val colors: ColorStateList)
     private val originalText = mutableMapOf<TextView, OriginalText>()
     private fun homeLabels() = with(binding) { listOf(homeApp1, homeApp2, homeApp3, homeApp4, homeApp5, homeApp6, homeApp7, homeApp8) }
@@ -94,6 +97,22 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
         setHomeAlignment(prefs.homeAlignment)
         initSwipeTouchListener()
         initClickListeners()
+        val editor = binding.root.grid
+        val back = object : OnBackPressedCallback(false) {
+            override fun handleOnBackPressed() = editor.finish()
+        }
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, back)
+        editor.onEditChanged = { back.isEnabled = it }
+        editor.onRemoveWidget = { id ->
+            homeMenu = AlertDialog.Builder(requireContext())
+                .setMessage(R.string.personal_widget_remove_confirm)
+                .setPositiveButton(R.string.personal_widget_remove) { _, _ ->
+                    homeWidgets.remove(id)
+                    editor.forgetWidget(id)
+                    renderHomeWidget()
+                }
+                .setNegativeButton(android.R.string.cancel, null).show()
+        }
     }
 
     override fun onStart() {
@@ -103,21 +122,63 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
 
     override fun onStop() {
         runCatching { homeWidgets.host.stopListening() }
+        binding.root.grid.finish()
         super.onStop()
     }
 
     private fun renderHomeWidget(): Boolean {
-        val slot = binding.homeWidgetSlot
+        val ids = homeWidgets.ids
+        val editor = binding.root.grid
+        val stock = binding.homeWidgetSlot
+        if (ids.size > 1 && !editor.enabled) editor.enable()
+        if (editor.enabled) {
+            stock.removeAllViews()
+            stock.isVisible = false
+            val stale = editor.widgetViews.keys - ids.toSet()
+            stale.forEach { id ->
+                val slot = editor.widgetViews.remove(id)
+                (slot?.parent as? ViewGroup)?.removeView(slot)
+                editor.forgetWidget(id)
+            }
+            ids.filterNot(editor.widgetViews::containsKey).forEach { id ->
+                val slot = HomeWidgetSlot(requireContext())
+                if (runCatching { homeWidgets.attach(slot, id, grid = true) }.getOrDefault(false)) {
+                    hookWidget(slot, id)
+                    editor.widgetViews[id] = slot
+                }
+            }
+            editor.bind(binding.dateTimeLayout, homeLabels())
+            return editor.widgetViews.isNotEmpty()
+        }
         val parent = binding.homeAppsLayout
         val desiredIndex = if (homeWidgets.above) 0 else parent.childCount - 1
-        if (parent.indexOfChild(slot) != desiredIndex) {
-            parent.removeView(slot)
-            parent.addView(slot, desiredIndex)
+        if (parent.indexOfChild(stock) != desiredIndex) {
+            parent.removeView(stock)
+            parent.addView(stock, desiredIndex)
         }
-        slot.removeAllViews()
-        val attached = runCatching { homeWidgets.attach(slot) }.getOrDefault(false)
-        slot.isVisible = attached
-        return attached
+        val id = ids.firstOrNull()
+        if (id != stockWidgetId || stock.childCount == 0) {
+            stock.removeAllViews()
+            stockWidgetId = null
+            if (id != null && runCatching { homeWidgets.attach(stock, id, grid = false) }.getOrDefault(false)) {
+                stockWidgetId = id
+                hookWidget(stock, id)
+            }
+        }
+        stock.isVisible = stockWidgetId != null
+        return stock.isVisible
+    }
+
+    private fun hookWidget(slot: HomeWidgetSlot, id: Int) {
+        slot.onHold = { startGrid(id) }
+        androidx.core.view.ViewCompat.replaceAccessibilityAction(slot,
+            androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_LONG_CLICK,
+            getString(R.string.personal_grid_edit)) { _, _ -> startGrid(id); true }
+    }
+
+    private fun startGrid(id: Int? = null) {
+        binding.root.grid.start(id) { renderHomeWidget() }
+        requireContext().showToast(R.string.personal_grid_hint)
     }
 
     override fun onResume() {
@@ -321,17 +382,19 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
     @Suppress("DEPRECATION")
     private fun applyAppearance() {
         setHomeAlignment()
-        binding.root.setPositions(renderHomeWidget() || appearance.customLayout || appearance.clock == HomeClock.STACKED, appearance.clockVertical, appearance.appVertical)
+        val widgetVisible = renderHomeWidget()
+        if (!binding.root.grid.enabled) binding.root.setPositions(widgetVisible || appearance.customLayout || appearance.clock == HomeClock.STACKED,
+            appearance.clockVertical, appearance.appVertical)
         homeLabels().forEach { label ->
             originalText[label]?.let { label.applyHomeText(appearance.font, appearance.labels, it.typeface, it.colors, prefs.boldFont) }
         }
         listOf(binding.date, binding.clock).forEach { label ->
             originalText[label]?.let { label.applyHomeText(appearance.font, appearance.clockColor, it.typeface, it.colors) }
         }
-        val stacked = appearance.clock == HomeClock.STACKED
         val locale = resources.configuration.locales[0]
-        binding.clock.format12Hour = if (stacked) "h'\n'mm" else "h:mm"
-        binding.clock.format24Hour = if (stacked) "HH'\n'mm" else DateFormat.getBestDateTimePattern(locale, "Hm")
+        binding.clock.format12Hour = appearance.clock.pattern(locale, false)
+        binding.clock.format24Hour = appearance.clock.pattern(locale, true)
+        appearance.clock.style(binding.clock, resources.getDimension(R.dimen.time_size))
     }
 
     private fun populateDateTime() {
@@ -730,12 +793,15 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
 
             override fun onLongClick() {
                 super.onLongClick()
-                try {
-                    findNavController().navigate(R.id.action_mainFragment_to_settingsFragment)
-                    viewModel.firstOpen(false)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                homeMenu = AlertDialog.Builder(requireContext())
+                    .setItems(arrayOf(getString(R.string.personal_grid_edit), getString(R.string.personal_home_settings))) { _, choice ->
+                        if (choice == 0) startGrid()
+                        else if (findNavController().currentDestination?.id == R.id.mainFragment) {
+                            findNavController().navigate(R.id.action_mainFragment_to_settingsFragment)
+                            viewModel.firstOpen(false)
+                        }
+                    }
+                    .setNegativeButton(android.R.string.cancel, null).show()
             }
 
             override fun onDoubleClick() {
@@ -789,6 +855,9 @@ class HomeFragment : BaseFragment(), View.OnClickListener, View.OnLongClickListe
     }
 
     override fun onDestroyView() {
+        homeMenu?.dismiss()
+        homeMenu = null
+        stockWidgetId = null
         originalText.clear()
         super.onDestroyView()
         _binding = null

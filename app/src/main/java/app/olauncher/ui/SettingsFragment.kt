@@ -471,6 +471,7 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
         if (photos.count > 0) {
             items += getString(if (photos.enabled) R.string.personal_photo_pause else R.string.personal_photo_resume)
             items += getString(R.string.personal_photo_next)
+            items += getString(if (photos.onUnlock) R.string.personal_photo_unlock_off else R.string.personal_photo_unlock_on)
             items += getString(R.string.personal_photo_clear)
         }
         personalDialog = AlertDialog.Builder(requireContext())
@@ -486,13 +487,19 @@ class SettingsFragment : BaseFragment(), View.OnClickListener, View.OnLongClickL
                             requireContext().showToast(R.string.personal_photo_picker_unavailable)
                         }
                     }
-                    1 -> if (photos.enabled) photos.pause() else {
+                    1 -> if (photos.enabled) photos.pauseDaily() else {
                         photos.resume()
                         photos.next()
                         populateWallpaperText()
                     }
                     2 -> { photos.next(); populateWallpaperText() }
-                    3 -> photos.clear()
+                    3 -> {
+                        val enable = !photos.onUnlock
+                        photos.setOnUnlock(enable)
+                        if (enable) requireContext().showToast(R.string.personal_photo_unlock_hint)
+                        populateWallpaperText()
+                    }
+                    4 -> photos.clear()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)

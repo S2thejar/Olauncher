@@ -5,12 +5,30 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.widget.TextView
+import android.text.format.DateFormat
+import android.util.TypedValue
+import java.util.Locale
 import androidx.core.content.edit
 
 internal enum class HomeFont(val family: String?) {
     DEFAULT(null), SANS("sans-serif"), SERIF("serif"), MONOSPACE("monospace"), CONDENSED("sans-serif-condensed")
 }
-internal enum class HomeClock { DEFAULT, STACKED, HIDDEN }
+internal enum class HomeClock(val preview: String, val scale: Float = 1f) {
+    DEFAULT("10:24"), STACKED("10\n24"), HIDDEN(""),
+    COMPACT("10:24", .62f), BOLD("10:24"), SECONDS("10:24:08", .78f), PERIOD("10:24 AM", .76f);
+
+    fun pattern(locale: Locale, use24Hour: Boolean): String = when (this) {
+        STACKED -> if (use24Hour) "HH'\n'mm" else "h'\n'mm"
+        SECONDS -> DateFormat.getBestDateTimePattern(locale, if (use24Hour) "Hms" else "hms")
+        PERIOD -> DateFormat.getBestDateTimePattern(locale, if (use24Hour) "Hm" else "hma")
+        else -> if (use24Hour) DateFormat.getBestDateTimePattern(locale, "Hm") else "h:mm"
+    }
+
+    fun style(view: TextView, baseSizePx: Float) {
+        view.setTextSize(TypedValue.COMPLEX_UNIT_PX, baseSizePx * scale)
+        if (this == BOLD) view.setTypeface(view.typeface, Typeface.BOLD)
+    }
+}
 internal enum class HomeVertical { DEFAULT, TOP, MIDDLE, BOTTOM }
 internal enum class HomeHorizontal { DEFAULT, START, CENTER, END }
 

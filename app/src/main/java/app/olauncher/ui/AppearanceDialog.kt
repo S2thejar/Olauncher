@@ -4,6 +4,7 @@ import android.content.Context
 import android.text.InputType
 import android.view.View
 import android.widget.AdapterView
+import android.widget.Button
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -44,17 +45,27 @@ internal fun showAppearanceDialog(context: Context): AlertDialog {
     }
     fun color(label: Int): EditText {
         val title = heading(label)
-        return EditText(context).apply {
+        val field = EditText(context).apply {
             id = View.generateViewId()
             title.labelFor = id
             setSingleLine(true)
             setHint(R.string.personal_hex_hint)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            controls.addView(this)
         }
+        controls.addView(Button(context).apply {
+            setText(R.string.personal_pick_color)
+            setOnClickListener {
+                showHomeColorPicker(context, PersonalAppearance.colorFromHex(field.text.toString())) { value ->
+                    field.setText(value?.let { String.format(Locale.ROOT, "#%06X", it and 0xffffff) }.orEmpty())
+                }
+            }
+        })
+        controls.addView(field)
+        return field
     }
     val sampleClock = TextView(context).apply { textSize = 34f; controls.addView(this) }
     val sampleApps = TextView(context).apply { textSize = 22f; setText(R.string.personal_app_preview); controls.addView(this) }
+    val previewSize = sampleClock.textSize
     val clockColors = sampleClock.textColors
     val appColors = sampleApps.textColors
     val clockTypeface = sampleClock.typeface
@@ -69,13 +80,10 @@ internal fun showAppearanceDialog(context: Context): AlertDialog {
     fun selectedFont() = HomeFont.entries[font.selectedItemPosition.coerceAtLeast(0)]
     fun selectedClock() = HomeClock.entries[style.selectedItemPosition.coerceAtLeast(0)]
     fun preview() {
-        sampleClock.text = when (selectedClock()) {
-            HomeClock.DEFAULT -> "10:24"
-            HomeClock.STACKED -> "10\n24"
-            HomeClock.HIDDEN -> ""
-        }
+        sampleClock.text = selectedClock().preview
         sampleClock.visibility = if (selectedClock() == HomeClock.HIDDEN) View.GONE else View.VISIBLE
         sampleClock.applyHomeText(selectedFont(), PersonalAppearance.colorFromHex(clockColor.text.toString()), clockTypeface, clockColors)
+        selectedClock().style(sampleClock, previewSize)
         sampleApps.applyHomeText(selectedFont(), PersonalAppearance.colorFromHex(appColor.text.toString()), appTypeface, appColors)
     }
     fun Int?.hex() = this?.let { String.format(Locale.ROOT, "#%06X", it and 0xffffff) }.orEmpty()

@@ -19,6 +19,7 @@ import kotlin.random.Random
 internal class PhotoWallpapers(private val context: Context) {
     private val prefs = context.getSharedPreferences("personal_wallpapers", Context.MODE_PRIVATE)
     val count get() = photos.size
+    val onUnlock get() = prefs.getBoolean("on_unlock", false)
     val enabled get() = prefs.getBoolean("enabled", false)
     private val photos get() = prefs.getStringSet("photos", emptySet()).orEmpty().toSet()
 
@@ -49,11 +50,29 @@ internal class PhotoWallpapers(private val context: Context) {
         )
     }
 
-    fun pause() {
+    fun setOnUnlock(active: Boolean) {
+        if (active && count == 0) return
+        if (active) turnOffOnlineRotation()
+        prefs.edit { putBoolean("on_unlock", active) }
+        if (!active) WorkManager.getInstance(context).cancelUniqueWork(UNLOCK_WORK)
+    }
+
+    fun advanceOnUnlock() {
+        if (!onUnlock || count == 0 || Prefs(context).dailyWallpaper) return
+        WorkManager.getInstance(context).enqueueUniqueWork(UNLOCK_WORK, ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<WallpaperWorker>().setInputData(workDataOf(MODE to PHOTO_UNLOCK)).build())
+    }
+
+    fun pauseDaily() {
         if (enabled) {
             prefs.edit { putBoolean("enabled", false) }
             WorkManager.getInstance(context).cancelUniqueWork(Constants.WALLPAPER_WORKER_NAME)
         }
+    }
+
+    fun pause() {
+        pauseDaily()
+        setOnUnlock(false)
         WorkManager.getInstance(context).cancelUniqueWork(NEXT_WORK)
     }
 
@@ -101,6 +120,8 @@ internal class PhotoWallpapers(private val context: Context) {
         const val MODE = "wallpaper_mode"
         const val PHOTO_PERIODIC = "photo_periodic"
         const val PHOTO_MANUAL = "photo_manual"
+        const val PHOTO_UNLOCK = "photo_unlock"
+        private const val UNLOCK_WORK = "personal_wallpaper_unlock"
         private const val NEXT_WORK = "personal_wallpaper_next"
     }
 }

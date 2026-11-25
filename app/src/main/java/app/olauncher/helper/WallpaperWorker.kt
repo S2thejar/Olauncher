@@ -23,6 +23,10 @@ class WallpaperWorker(appContext: Context, workerParams: WorkerParameters) : Cor
         val photos = PhotoWallpapers(applicationContext)
         when (inputData.getString(PhotoWallpapers.MODE)) {
             PhotoWallpapers.PHOTO_MANUAL -> return if (!prefs.dailyWallpaper && photos.applyNext()) Result.success() else Result.failure()
+            PhotoWallpapers.PHOTO_UNLOCK -> {
+                if (photos.onUnlock && !prefs.dailyWallpaper) photos.applyNext()
+                return Result.success()
+            }
             PhotoWallpapers.PHOTO_PERIODIC -> {
                 if (photos.enabled && !prefs.dailyWallpaper) photos.applyNext()
                 return Result.success()

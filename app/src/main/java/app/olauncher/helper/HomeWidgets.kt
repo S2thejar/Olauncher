@@ -12,6 +12,8 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.util.SizeF
+import app.olauncher.ui.HomeWidgetSlot
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
@@ -22,25 +24,27 @@ internal class HomeWidgetStore(private val context: Context) {
     val manager = AppWidgetManager.getInstance(context)
     val host = AppWidgetHost(context, 1042)
     private val prefs = context.getSharedPreferences("home_widgets", Context.MODE_PRIVATE)
-    var id: Int
-        get() = prefs.getInt("id", AppWidgetManager.INVALID_APPWIDGET_ID)
-        set(value) { prefs.edit { putInt("id", value) } }
+    val ids: List<Int>
+        get() = prefs.getString("ids", null)?.split(',')?.mapNotNull(String::toIntOrNull)
+            ?: listOf(prefs.getInt("id", AppWidgetManager.INVALID_APPWIDGET_ID)).filter { it != AppWidgetManager.INVALID_APPWIDGET_ID }
+
+    fun add(id: Int) = saveIds(ids + id)
+    private fun saveIds(value: List<Int>) = prefs.edit { putString("ids", value.joinToString(",")); remove("id") }
+
     var above: Boolean
         get() = prefs.getBoolean("above", false)
         set(value) { prefs.edit { putBoolean("above", value) } }
 
-    fun remove() {
-        val previous = id
-        id = AppWidgetManager.INVALID_APPWIDGET_ID
-        release(previous)
+    fun remove(id: Int) {
+        saveIds(ids - id)
+        release(id)
     }
 
     fun release(id: Int) {
         if (id != AppWidgetManager.INVALID_APPWIDGET_ID) runCatching { host.deleteAppWidgetId(id) }
     }
 
-    fun attach(container: FrameLayout): Boolean {
-        val id = id
+    fun attach(container: HomeWidgetSlot, id: Int, grid: Boolean): Boolean {
         if (id == AppWidgetManager.INVALID_APPWIDGET_ID) return false
         val info = manager?.getAppWidgetInfo(id) ?: return false
         // RemoteViews must inflate platform views, not AppCompat replacements, because Android
@@ -51,16 +55,25 @@ internal class HomeWidgetStore(private val context: Context) {
                 if (name == Context.LAYOUT_INFLATER_SERVICE) inflater else super.getSystemService(name)
         }
         val widget = host.createView(platformViews, id, info)
+        container.provider = info
         container.removeAllViews()
         val density = container.resources.displayMetrics.density
         val maxHeight = if (container.resources.configuration.screenHeightDp < 500) 100 else 180
         val minHeight = (info.minHeight / density).toInt().coerceIn(48, maxHeight)
-        container.addView(widget, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (minHeight * density).toInt()))
+        container.addView(widget, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            if (grid) ViewGroup.LayoutParams.MATCH_PARENT else (minHeight * density).toInt()))
         widget.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
                 val width = ((right - left) / density).toInt()
                 val height = ((bottom - top) / density).toInt()
-                if (width > 0 && height > 0) widget.updateAppWidgetSize(Bundle(), width, height, width, height)
+                if (width > 0 && height > 0) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        widget.updateAppWidgetSize(Bundle(), listOf(SizeF(width.toFloat(), height.toFloat())))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        widget.updateAppWidgetSize(Bundle(), width, height, width, height)
+                    }
+                }
             }
         }
         return true
@@ -90,13 +103,21 @@ internal class WidgetSetup(private val fragment: Fragment, private val setupInPr
 
     fun manage(): AlertDialog? {
         val context = fragment.requireContext()
-        val info = store.id.takeUnless { it == invalid }?.let { store.manager?.getAppWidgetInfo(it) }
-        if (info == null) return pick()
+        val widgets = store.ids.map { id -> id to store.manager?.getAppWidgetInfo(id) }
+        if (widgets.isEmpty()) return pick()
+        val items = listOf(context.getString(R.string.personal_widget_add)) + widgets.map { (_, info) ->
+            info?.loadLabel(context.packageManager) ?: context.getString(R.string.personal_widget_unavailable)
+        }
         return AlertDialog.Builder(context)
-            .setTitle(info.loadLabel(context.packageManager))
-            .setItems(arrayOf(context.getString(if (store.above) R.string.personal_widget_move_below else R.string.personal_widget_move_above),
-                context.getString(R.string.personal_widget_remove))) { _, choice ->
-                if (choice == 0) store.above = !store.above else store.remove()
+            .setTitle(R.string.personal_widget)
+            .setItems(items.toTypedArray()) { _, choice ->
+                if (choice == 0) pick() else {
+                    val id = widgets[choice - 1].first
+                    AlertDialog.Builder(context)
+                        .setMessage(context.getString(R.string.personal_widget_remove_question, items[choice]))
+                        .setPositiveButton(R.string.personal_widget_remove) { _, _ -> store.remove(id) }
+                        .setNegativeButton(android.R.string.cancel, null).show()
+                }
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
@@ -104,6 +125,10 @@ internal class WidgetSetup(private val fragment: Fragment, private val setupInPr
 
     private fun pick(): AlertDialog? {
         val context = fragment.requireContext()
+        if (store.ids.size >= 4) {
+            context.showToast(R.string.personal_widget_limit)
+            return null
+        }
         val providers = store.manager?.installedProviders.orEmpty()
             .filter { it.widgetCategory and AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN != 0 }
             .map { it to it.loadLabel(context.packageManager) }
@@ -157,11 +182,9 @@ internal class WidgetSetup(private val fragment: Fragment, private val setupInPr
 
     private fun finish() {
         if (store.manager?.getAppWidgetInfo(pending) == null) return fail()
-        val previous = store.id
-        store.id = pending
+        store.add(pending)
         pending = invalid
         setupInProgress(false)
-        store.release(previous)
     }
 
     private fun fail() {

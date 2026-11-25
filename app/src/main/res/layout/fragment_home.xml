@@ -83,7 +83,7 @@
         android:paddingTop="112dp"
         android:paddingBottom="48dp">
 
-        <FrameLayout
+        <app.olauncher.ui.HomeWidgetSlot
             android:id="@+id/homeWidgetSlot"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

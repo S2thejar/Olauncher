@@ -2,6 +2,8 @@ package app.olauncher.ui
 
 import android.animation.LayoutTransition
 import android.content.Context
+import android.graphics.Canvas
+import android.view.MotionEvent
 import android.util.AttributeSet
 import android.view.View
 import android.widget.FrameLayout
@@ -11,6 +13,41 @@ import app.olauncher.helper.dpToPx
 
 /** Moves the actual home groups, keeping their hitboxes with their rendered positions. */
 class HomePositioningLayout(context: Context, attrs: AttributeSet) : FrameLayout(context, attrs) {
+    internal val grid by lazy { HomeGridEditor(this) }
+    private var editTouch = false
+    private var beganBeforeEditing = false
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        if (grid.enabled) grid.measure(measuredWidth, measuredHeight)
+    }
+
+    override fun drawChild(canvas: Canvas, child: View, drawingTime: Long): Boolean {
+        if (!grid.enabled || !grid.isItem(child)) return super.drawChild(canvas, child, drawingTime)
+        val save = canvas.save()
+        grid.clip(canvas)
+        return super.drawChild(canvas, child, drawingTime).also { canvas.restoreToCount(save) }
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (grid.enabled) grid.draw(canvas)
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            beganBeforeEditing = !grid.editing
+            editTouch = grid.editing && !grid.isFooter(event.x, event.y)
+        }
+        if (editTouch || (grid.editing && beganBeforeEditing)) {
+            return grid.touch(event)
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun onInterceptTouchEvent(event: MotionEvent): Boolean =
+        (grid.enabled && grid.blocksClippedTap(event.x, event.y)) || super.onInterceptTouchEvent(event)
+
     private var custom = false
     private var clockPosition = HomeVertical.DEFAULT
     private var appsPosition = HomeVertical.DEFAULT
@@ -45,6 +82,7 @@ class HomePositioningLayout(context: Context, attrs: AttributeSet) : FrameLayout
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
+        if (grid.enabled) { grid.layout(); return }
         if (!custom) return
         val clock = findViewById<View>(R.id.dateTimeLayout)
         val apps = findViewById<View>(R.id.homeAppsLayout)
